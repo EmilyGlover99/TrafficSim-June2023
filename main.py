@@ -36,6 +36,9 @@ class DesignerController:
                 finished = True
                 print("Ending design episode")
 
+            if "generate states" in str(next_action):
+
+
 
 
 

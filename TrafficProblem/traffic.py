@@ -8,6 +8,7 @@ from multiprocessing import Pool
 from itertools import chain, combinations
 import Networks.Original.network_traffic as traffic_densities
 import random
+import xml.etree.ElementTree as ET
 
 if 'SUMO_HOME' in os.environ:
     tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
@@ -21,8 +22,8 @@ import traci.constants
 
 import sumolib
 
-sumoBinary = "F:\Programming Files\Eclipse" + os.sep + "Sumo" + os.sep + "bin" + os.sep + "sumo-gui.exe"
-
+sumoBinary = "F:\Programming Files\Eclipse" + os.sep + "Sumo" + os.sep + "bin" + os.sep + "sumo.exe"
+# sumoBinary = "/usr/local/share/sumo/bin" + os.sep + "sumo-gui"
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -31,51 +32,36 @@ class TrafficProblemManager:
     node_ids = []
     temp = []
     debug_mode = False
-    # network_lanes = []
-    # current_emissions = {}
-    # traffic_flows = []
-    # current_vehicles = []
-    # lane_information = {}
-    # initial_matrix = []
     vehicle_counter = 0
-    crude_counter = 0
-
-    # test_cars = []
-    # test_street = "-23353548#1"  # We wish to reduce traffic on this street
-    # action_set = ["-25156946#0","-23353543","-23353378#0","-23353548#2","-23353532#3"]
-    # action_set = ["-1069087493#1","-23353548#1","-25156946#0","-23353553#0","-23353532#3","-1082152568"]
-    # action_set = ["-43308108#6", "-43308108#8", "-25099570", "-1069087493#1", "-23353543"]
-
-    test_set = []
+    total_pollution =[]
 
     def __init__(self, debug):
         self.temp.append(['.Original/'])
         self.debug_mode = debug
         self.net = sumolib.net.readNet('./Networks/Original/osm.net.xml.gz')
-        # self.edge_ids = self.net.getEdges()
-        # for edge in self.edge_ids:
-        #     edge_location = sumolib.net.edge.Edge.getShape(edge)
-        #     print(edge_location)
-        #
-        # print(self.edge_ids)
 
-    def runState(self, state, runparameter=1000, testvehicles="", teststreet=""):
+    def runState(self, state, runparameter=1000):
         if state == "Original":
-            state = os.sep + "Networks\\Original" + os.sep
+            state = os.sep + "Networks" + os.sep + "Original" + os.sep
         else:
-            state = os.sep + "Networks\\Temp" + os.sep + str(state) + os.sep
-        # testvehicles = self.test_cars
-        # def runState(self, params):
-        #     (state, runparameter, testvehicles, teststreet) = params
-        #     print(dir_path + state + "osm.sumocfg")
-        sumoCmd = [sumoBinary, "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
-                   "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
-                   "--no-step-log=True", "--threads=4","--step-length=0.5"]
+            state = os.sep + "Networks" + os.sep + "Modified" + os.sep + str(state) + os.sep
+
         # sumoCmd = [sumoBinary, "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
-        #            "--quit-on-end", "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
-        #            "--no-step-log=True", "--threads=4"]
+        #            "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
+        #            "--no-step-log=True", "--threads=4","--step-length=0.5"]
+        sumoCmd = [sumoBinary, "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
+                   "--quit-on-end", "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
+                   "--no-step-log=True", "--threads=4","--step-length=0.5"]
         if self.debug_mode: print("Starting SUMO")
         traci.start(sumoCmd)
+        all_edges = traci.edge.getIDList()
+        vehicles = []
+        # Check if vehicles have already been generated if not generate them!
+        if not os.path.isfile(dir_path + os.sep + "vehicles.csv"):
+            self.generate_vehicles(1000, dir_path + os.sep + "vehicles.csv")
+            vehicles = pd.read_csv(dir_path + os.sep + "vehicles.csv")
+        else:
+            vehicles = pd.read_csv(dir_path + os.sep + "vehicles.csv")
 
         # Run the network in SUMO
         j = 0  # j is the time step
@@ -84,83 +70,31 @@ class TrafficProblemManager:
             last_j = runparameter
         else:
             last_j = 5000
-        initial_journey_time = {}
-        total_journey_time = 0
-        vehicles_still_travelling = []
-        counter = 0
-        # for vehicle in testvehicles:
-        #     vehicles_still_travelling.append(["TestVehicle_" + str(counter), vehicle[0], vehicle[1]])
-        #     counter += 1
 
         while (j < last_j):
             # for each time step (which equals 1 second)
             traci.simulationStep()
-            #time.sleep(0.25)  # delay by 1 to allow time for viewing the gui
 
-            if j % 8 == 0:
-                # every 5 seconds, spawn a car from residential
-                # Spawn one car in each residential area
-                self.spawn_vehicle(0, "residential")
-                self.spawn_vehicle(1, "residential")
-                self.spawn_vehicle(2, "residential")
-                self.spawn_vehicle(3, "residential")
-                self.spawn_vehicle(4, "residential")
-            if j % 25 == 0:
-                # every 15 seconds, spawn a car from city
-                self.spawn_vehicle(-1, "city")
-            if j % 35 == 0:
-                # every 15 seconds, spawn a car from retail
-                self.spawn_vehicle(-1, "retail")
-            if j % 50 == 0:
-                # every 20 seconds, spawn a car from industrial
-                    self.spawn_vehicle(-1, "industrial")
-            if j % 25 == 0:
-                # every 4 seconds, spawn a car on the minor roads
-                for k in range(0, len(traffic_densities.minor_entrances)):
-                    self.spawn_vehicle(k, "minor")
-            if j % 12 == 0:
-                # every 4 seconds, spawn a car on the major roads
-                for k in range(0,len(traffic_densities.main_entrances)):
-                    self.spawn_vehicle(k, "major")
+            # Generate cars from vehicles.csv for current timestep
+            temp = vehicles.loc[vehicles['timestep'] == j]
+            if len(temp) != 0:
+                # There are vehicles which match this timestep, generate them!
+                for index, row in temp.iterrows():
+                    if row[1] in all_edges and row[2] in all_edges:
+                        self.vehicle_counter += 1
+                        vehicle_route = traci.simulation.findRoute(fromEdge=row[1], toEdge=row[2])
+                        traci.route.add("BackgroundRoute_" + str(self.vehicle_counter), vehicle_route.edges)
+                        traci.vehicle.add("TestVehicle_" + str(self.vehicle_counter),
+                                          "BackgroundRoute_" + str(self.vehicle_counter))
 
-            # if j == 5:
-            #     # add test vehicles
-            #     vehicle_counter = 0
-            #     for vehicle in testvehicles:
-            #         # print(vehicle)
-            #         # print(vehicle[0])
-            #         # print(vehicle[1])
-            #         vehicle_route = traci.simulation.findRoute(fromEdge="" + str(vehicle[1]) + "",
-            #                                                    toEdge="" + str(vehicle[0]) + "")
-            #         traci.route.add("TestRoute_" + str(vehicle_counter), vehicle_route.edges)
-            #         traci.vehicle.add("TestVehicle_" + str(vehicle_counter), "TestRoute_" + str(vehicle_counter))
-            #         initial_journey_time["TestVehicle_" + str(vehicle_counter)] = traci.simulation.getTime()
-            #         vehicle_counter += 1
-            # if j > 6:
-            #     for vehicle in vehicles_still_travelling:
-            #         if self.check_vehicle_position(vehicle[0], vehicle[2]):
-            #             # This vehicle has reached the end point
-            #             total_journey_time = total_journey_time + traci.simulation.getTime() - initial_journey_time[
-            #                 vehicle[0]]
-            #             # print(str(vehicle[0]) + " has reached the end!")
-            #             # Remove this vehicle from list
-            #             vehicles_still_travelling.remove(vehicle)
-            #         # print(vehicles_still_travelling)
-            #         # print(total_journey_time)
-            #         last_j = j + 500  # Play about with this value (It is used to set a cap on simulation times)
-            #
-            #     if len(vehicles_still_travelling) == 0:
-            #         traci.close(wait=False)
-            #         # print(total_journey_time)
-            #         return total_journey_time
+            self.read_road_sensors()
+
             if j > last_j:
                 j = last_j
             j += 1
-        # for vehicle in vehicles_still_travelling:
-        #     total_journey_time = total_journey_time + traci.simulation.getTime() - initial_journey_time[vehicle[0]]
-
         traci.close(wait=False)
-        return total_journey_time
+        print(str(sum(self.total_pollution)/500))
+        return sum(self.total_pollution)/500
 
     def check_vehicle_position(self, VehID, TargetEdge):
         current_edge_ID = traci.vehicle.getRoadID(VehID)
@@ -262,12 +196,21 @@ class TrafficProblemManager:
                     end_road = traffic_densities.main_exits[random.choice(list(range(0, len(traffic_densities.main_entrances))))]
 
         if start_road != "" and end_road != "":
-            self.vehicle_counter += 1
-            # print("start_road = " + str(start_road) + " and end_road = " + str(end_road))
-            vehicle_route = traci.simulation.findRoute(fromEdge=start_road, toEdge=end_road)
-            traci.route.add("BackgroundRoute_" + str(self.vehicle_counter), vehicle_route.edges)
-            traci.vehicle.add("TestVehicle_" + str(self.vehicle_counter), "BackgroundRoute_" + str(self.vehicle_counter))
+            return start_road, end_road
 
+        return 5
+
+    def read_road_sensors(self):
+        sensors = traffic_densities.road_sensors
+
+        if not self.total_pollution:
+            for sensor in sensors:
+                self.total_pollution.append(traci.edge.getCOEmission(sensor))
+        else:
+            i = 0
+            for sensor in sensors:
+                self.total_pollution[i] = self.total_pollution[i] + traci.edge.getCOEmission(sensor)
+                i+= 1
         return 5
 
     def generate_residential_road(self, area_id):
@@ -305,8 +248,153 @@ class TrafficProblemManager:
                 found = True
                 return closest_edge
 
+    def generate_vehicles(self, max_timestep, output_dir):
+        vehicles = []
+        progress_count = 0
+        progress_range = 10
+        for j in range(0,max_timestep):
+            if j % 8 == 0:
+                # every 5 seconds, spawn a car from residential
+                # Spawn one car in each residential area
+                car_locations = self.spawn_vehicle(0, "residential")
+                vehicles.append([j, car_locations[0], car_locations[1]])
 
+                car_locations = self.spawn_vehicle(1, "residential")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+
+                car_locations = self.spawn_vehicle(2, "residential")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+
+                car_locations = self.spawn_vehicle(3, "residential")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+
+                car_locations = self.spawn_vehicle(4, "residential")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+
+            if j % 25 == 0:
+                # every 15 seconds, spawn a car from city
+                car_locations = self.spawn_vehicle(-1, "city")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+            if j % 35 == 0:
+                # every 15 seconds, spawn a car from retail
+                car_locations = self.spawn_vehicle(-1, "retail")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+            if j % 50 == 0:
+                # every 20 seconds, spawn a car from industrial
+                car_locations = self.spawn_vehicle(-1, "industrial")
+                vehicles.append([j, car_locations[0], car_locations[1]])
+            if j % 25 == 0:
+                # every 4 seconds, spawn a car on the minor roads
+                for k in range(0, len(traffic_densities.minor_entrances)):
+                    car_locations = self.spawn_vehicle(k, "minor")
+                    vehicles.append([j, car_locations[0], car_locations[1]])
+            if j % 12 == 0:
+                # every 4 seconds, spawn a car on the major roads
+                for k in range(0,len(traffic_densities.main_entrances)):
+                    car_locations = self.spawn_vehicle(k, "major")
+                    vehicles.append([j, car_locations[0], car_locations[1]])
+
+            if j%(max_timestep/progress_range) == 0:
+
+                print(str(progress_count) + "% complete")
+                progress_count = progress_count + progress_range
+        vehicles = np.array(vehicles)
+        vehicles = pd.DataFrame(vehicles)
+        vehicles.columns = ["timestep", "start_loc", "end_loc"]
+        vehicles.to_csv(output_dir, index=False)
+        print("Saved to: " + output_dir)
+
+    def generate_powerset(self, action_set):
+        # This function generates the powerset of the action set. i.e. generates every combination of actions
+        test_set = list(powerset(action_set))
+        temp_set = []
+        for item in test_set:
+            if len(item) == 1:
+                temp_set.append([item[0]])
+            else:
+                temp_set.append(list(item))
+        return temp_set
+    def generate_states(self):
+        # Converting actionset into powerset
+        actions_set = self.generate_powerset(traffic_densities.action_set)
+        print(actions_set)
+        # Generating network files
+        i = 0
+        for action in actions_set:
+            # for each action, generate a new network
+            if not action:
+                # This is the empty set
+                if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0"):
+                    os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0")
+                subprocess.run(["netconvert", "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
+                                "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0" + os.sep + "osm.net.xml",
+                                "--lefthand=True", "--no-warnings", "--no-turnarounds"],  stdout=subprocess.DEVNULL)
+                generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0" + os.sep + "osm.sumocfg")
+                i = i + 1
+            else:
+                # We aren't working in the empty set case
+                # Check if the directory of the new file exists yet
+                if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i)):
+                    os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i))
+                # prepare action set
+                final_actions = ""
+                for this_action in action:
+                    if final_actions == "":
+                        final_actions = str(this_action) + ", -" + str(this_action)
+                    else:
+                        final_actions = final_actions + "," + str(this_action) + ", -" + str(this_action)
+                subprocess.run(["netconvert", "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
+                                "--remove-edges.explicit", "" + final_actions + "",
+                                "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i) + os.sep + "osm.net.xml",
+                                "--lefthand=True", "--no-warnings", "--no-turnarounds"], stdout=subprocess.DEVNULL)
+                generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i) + os.sep + "osm.sumocfg")
+
+                completeness = i/len(actions_set)
+                print(str(completeness * 100) + ", or " + str(i) + " out of " + str(len(actions_set)))
+                i = i + 1
+
+    def run_crude(self):
+        action_set = self.generate_powerset(traffic_densities.action_set)
+        print(len(action_set))
+        num_of_trials = len(action_set)
+        air_pollution = []
+        for i in range(0, num_of_trials):
+            # Run network i
+            air_pollution.append(self.runState(i))
+            self.total_pollution = []
+
+        print(air_pollution)
+
+
+
+
+
+def powerset(s):
+    s = list(s)
+    return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
+
+def generate_sumocfg(output_path):
+    # Create the root element for the sumocfg XML
+    root = ET.Element("configuration")
+
+    # Add the input section to the configuration
+    input_section = ET.SubElement(root, "input")
+    ET.SubElement(input_section, "net-file", {"value": "osm.net.xml"})
+
+    processing_section = ET.SubElement(root, "processing")
+    ET.SubElement(processing_section, "ignore-route-errors", {"value": "true"})
+    # Add the output section to the configuration
+    report_section = ET.SubElement(root, "report")
+    ET.SubElement(report_section, "verbose", {"value": "true"})
+
+    # Create an ElementTree object from the root and write it to a file
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="\t", level=0)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
 
 
 Manager = TrafficProblemManager(debug=False)
-Manager.runState("Original")
+# Manager.runState("Original")
+#Manager.generate_states()
+Manager.run_crude()
+
