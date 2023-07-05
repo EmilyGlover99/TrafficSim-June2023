@@ -4,23 +4,27 @@ import time
 import subprocess
 import shutil
 import pandas as pd
-from multiprocessing import Pool
+import multiprocessing
+from queue import Queue
+import tqdm
 from itertools import chain, combinations
 import Networks.Original.network_traffic as traffic_densities
 import random
 import xml.etree.ElementTree as ET
+import socket
 
 if 'SUMO_HOME' in os.environ:
     tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
-    print(tools)
     sys.path.append(tools)
 else:
     sys.exit("please declare environment variable 'SUMO_HOME'")
 
 import traci
-import traci.constants
+import traci.constants as tc
 
 import sumolib
+import libsumo
+
 
 sumoBinary = "F:\Programming Files\Eclipse" + os.sep + "Sumo" + os.sep + "bin" + os.sep + "sumo.exe"
 # sumoBinary = "/usr/local/share/sumo/bin" + os.sep + "sumo-gui"
@@ -40,61 +44,24 @@ class TrafficProblemManager:
         self.debug_mode = debug
         self.net = sumolib.net.readNet('./Networks/Original/osm.net.xml.gz')
 
-    def runState(self, state, runparameter=1000):
-        if state == "Original":
-            state = os.sep + "Networks" + os.sep + "Original" + os.sep
-        else:
-            state = os.sep + "Networks" + os.sep + "Modified" + os.sep + str(state) + os.sep
+    def runState(self, state):
+        # runparameter = 1000
+        # if state == "Original":
+        #     state = os.sep + "Networks" + os.sep + "Original" + os.sep
+        # else:
+        #     state = os.sep + "Networks" + os.sep + "Modified" + os.sep + str(state) + os.sep
+        #
+        # libsumo.start(["sumo", "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
+        #                "--quit-on-end", "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
+        #                "--no-step-log=True", "--threads=3","--step-length=0.5","--no-warnings=True"])
+        #
+        # for j in range(0, runparameter):
+        #     libsumo.simulationStep()
+        #     self.read_road_sensors()
+        # libsumo.close()
 
-        # sumoCmd = [sumoBinary, "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
-        #            "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
-        #            "--no-step-log=True", "--threads=4","--step-length=0.5"]
-        sumoCmd = [sumoBinary, "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
-                   "--quit-on-end", "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
-                   "--no-step-log=True", "--threads=4","--step-length=0.5"]
-        if self.debug_mode: print("Starting SUMO")
-        traci.start(sumoCmd)
-        all_edges = traci.edge.getIDList()
-        vehicles = []
-        # Check if vehicles have already been generated if not generate them!
-        if not os.path.isfile(dir_path + os.sep + "vehicles.csv"):
-            self.generate_vehicles(1000, dir_path + os.sep + "vehicles.csv")
-            vehicles = pd.read_csv(dir_path + os.sep + "vehicles.csv")
-        else:
-            vehicles = pd.read_csv(dir_path + os.sep + "vehicles.csv")
-
-        # Run the network in SUMO
-        j = 0  # j is the time step
-        # Set the end point
-        if runparameter != -1:
-            last_j = runparameter
-        else:
-            last_j = 5000
-
-        while (j < last_j):
-            # for each time step (which equals 1 second)
-            traci.simulationStep()
-
-            # Generate cars from vehicles.csv for current timestep
-            temp = vehicles.loc[vehicles['timestep'] == j]
-            if len(temp) != 0:
-                # There are vehicles which match this timestep, generate them!
-                for index, row in temp.iterrows():
-                    if row[1] in all_edges and row[2] in all_edges:
-                        self.vehicle_counter += 1
-                        vehicle_route = traci.simulation.findRoute(fromEdge=row[1], toEdge=row[2])
-                        traci.route.add("BackgroundRoute_" + str(self.vehicle_counter), vehicle_route.edges)
-                        traci.vehicle.add("TestVehicle_" + str(self.vehicle_counter),
-                                          "BackgroundRoute_" + str(self.vehicle_counter))
-
-            self.read_road_sensors()
-
-            if j > last_j:
-                j = last_j
-            j += 1
-        traci.close(wait=False)
-        print(str(sum(self.total_pollution)/500))
-        return sum(self.total_pollution)/500
+        return 0
+        # return sum(self.total_pollution)/500
 
     def check_vehicle_position(self, VehID, TargetEdge):
         current_edge_ID = traci.vehicle.getRoadID(VehID)
@@ -205,11 +172,11 @@ class TrafficProblemManager:
 
         if not self.total_pollution:
             for sensor in sensors:
-                self.total_pollution.append(traci.edge.getCOEmission(sensor))
+                self.total_pollution.append(libsumo.edge.getCOEmission(sensor))
         else:
             i = 0
             for sensor in sensors:
-                self.total_pollution[i] = self.total_pollution[i] + traci.edge.getCOEmission(sensor)
+                self.total_pollution[i] = self.total_pollution[i] + libsumo.edge.getCOEmission(sensor)
                 i+= 1
         return 5
 
@@ -315,58 +282,64 @@ class TrafficProblemManager:
                 temp_set.append(list(item))
         return temp_set
     def generate_states(self):
-        # Converting actionset into powerset
-        actions_set = self.generate_powerset(traffic_densities.action_set)
-        print(actions_set)
-        # Generating network files
-        i = 0
-        for action in actions_set:
-            # for each action, generate a new network
-            if not action:
-                # This is the empty set
-                if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0"):
-                    os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0")
-                subprocess.run(["netconvert", "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
-                                "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0" + os.sep + "osm.net.xml",
-                                "--lefthand=True", "--no-warnings", "--no-turnarounds"],  stdout=subprocess.DEVNULL)
-                generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + "0" + os.sep + "osm.sumocfg")
-                i = i + 1
-            else:
-                # We aren't working in the empty set case
-                # Check if the directory of the new file exists yet
-                if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i)):
-                    os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i))
-                # prepare action set
-                final_actions = ""
-                for this_action in action:
-                    if final_actions == "":
-                        final_actions = str(this_action) + ", -" + str(this_action)
-                    else:
-                        final_actions = final_actions + "," + str(this_action) + ", -" + str(this_action)
-                subprocess.run(["netconvert", "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
-                                "--remove-edges.explicit", "" + final_actions + "",
-                                "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i) + os.sep + "osm.net.xml",
-                                "--lefthand=True", "--no-warnings", "--no-turnarounds"], stdout=subprocess.DEVNULL)
-                generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(i) + os.sep + "osm.sumocfg")
-
-                completeness = i/len(actions_set)
-                print(str(completeness * 100) + ", or " + str(i) + " out of " + str(len(actions_set)))
-                i = i + 1
+        if __name__ == '__main__':
+            # Converting actionset into powerset
+            # Create a multiprocessing pool
+            multiprocessing.freeze_support()
+            pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+            a= 0
+            for result in tqdm.tqdm(pool.imap(generate_action, global_actions_set), total=len(global_actions_set)):
+                a = a + 1
+            pool.close()
+            pool.join()
 
     def run_crude(self):
-        action_set = self.generate_powerset(traffic_densities.action_set)
-        print(len(action_set))
-        num_of_trials = len(action_set)
-        air_pollution = []
-        for i in range(0, num_of_trials):
-            # Run network i
-            air_pollution.append(self.runState(i))
-            self.total_pollution = []
 
-        print(air_pollution)
+        i = 0
+        # for j in range(0,4):
+        p1 = multiprocessing.Process(target=self.runState, args=(0,))
+        p1.start()
+        p1.join()
 
+        # if __name__ == '__main__':
+        #     all_states = range(0,len(global_actions_set))
+        #     task_queue = Queue()
+        #     for trial in all_states:
+        #         task_queue.put(trial)
+        #     # Create a multiprocessing pool
+        #     num_processes = 1
+        #     workers = []
+        #     for _ in range(num_processes):
+        #         worker = multiprocessing.Process(target=self.simulation_worker,args=(task_queue,))
+        #         worker.start()
+        #         workers.append(worker)
+        #
+        #     task_queue.join()
+        #     # Stop the worker processes
+        #     for _ in range(num_processes):
+        #         task_queue.put(None)  # Add termination signal to the task queue
+        #
+        #     for worker in workers:
+        #         worker.join()
 
-
+            #
+            # result_list_tqdm = []
+            # for result in tqdm.tqdm(pool.imap(self.runState, range(0,len(global_actions_set))), total=len(global_actions_set)):
+            #     result_list_tqdm.append(result)
+            # pool.close()
+            # pool.join()
+            # print(result_list_tqdm)
+        # action_set = self.generate_powerset(traffic_densities.action_set)
+        # num_of_trials = len(action_set)
+        # air_pollution = []
+        # for i in range(0, num_of_trials):
+        #     start_time = time.time()
+        #     # Run network i
+        #     air_pollution.append(self.runState(i))
+        #     self.total_pollution = []
+        #     print("Iteration (" + str(i) + ") took " + str(time.time() - start_time) + " to run!")
+        #
+        # print(air_pollution)
 
 
 def powerset(s):
@@ -380,7 +353,7 @@ def generate_sumocfg(output_path):
     # Add the input section to the configuration
     input_section = ET.SubElement(root, "input")
     ET.SubElement(input_section, "net-file", {"value": "osm.net.xml"})
-
+    ET.SubElement(input_section, "route-files", {"value": "osm.rou.xml"})
     processing_section = ET.SubElement(root, "processing")
     ET.SubElement(processing_section, "ignore-route-errors", {"value": "true"})
     # Add the output section to the configuration
@@ -392,9 +365,137 @@ def generate_sumocfg(output_path):
     ET.indent(tree, space="\t", level=0)
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
 
+def generate_routesxml(netfile, vehicles_file, output_path):
+    net = sumolib.net.readNet(netfile)
+    edge_ids = [edge.getID() for edge in net.getEdges()]
+    vehicles = pd.read_csv(vehicles_file)
+
+    # Create the root element for the sumocfg XML
+    root = ET.Element("routes")
+    # root2 = ET.Element("routes")
+    counter = 0
+    for index, vehicle in vehicles.iterrows():
+        if vehicle['start_loc'] in edge_ids and vehicle['end_loc'] in edge_ids:
+            # generate route
+            route = net.getShortestPath(net.getEdge(vehicle['start_loc']), net.getEdge(vehicle['end_loc']))[0]
+            if route:
+                route = [edge.getID() for edge in route]
+                route = " ".join(route)
+                vehicle_section = ET.SubElement(root, "vehicle", {"id": str(counter), "depart": str(vehicle['timestep'])})
+                route_section = ET.SubElement(vehicle_section, "route", {"edges": route})
+                counter = counter + 1
+                # trip_section = ET.SubElement(root2, "trip", {"id": str(index), "depart": str(vehicle['timestep']), "from": vehicle['start_loc'], "to": vehicle['end_loc']})
+
+    # Create an ElementTree object from the root and write it to a file
+    tree = ET.ElementTree(root)
+    # tree2 = ET.ElementTree(root2)
+    ET.indent(tree, space="\t", level=0)
+    # ET.indent(tree2, space="\t", level=0)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    # tree2.write(trips_path, encoding="utf-8", xml_declaration=True)
+def generate_action(action):
+
+    if not action:
+        if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0)):
+            os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0))
+            # prepare action set
+        subprocess.run(["netconvert",
+                        "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
+                        "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0) + os.sep + "osm.net.xml",
+                        "--lefthand=True", "--no-warnings", "--no-turnarounds"], stdout=subprocess.DEVNULL)
+        generate_routesxml(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0) + os.sep + "osm.net.xml",
+                           dir_path + os.sep + "vehicles.csv",
+                           dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0) + os.sep + "osm.rou.xml")
+                           # dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0) + os.sep + "osm.trips.xml")
+        generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(0) + os.sep + "osm.sumocfg")
+
+
+    else:
+
+        index = global_actions_set.index(action)
+
+        if not os.path.isdir(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index)):
+            os.makedirs(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index))
+        # prepare action set
+        final_actions = ""
+        for this_action in action:
+            if final_actions == "":
+                final_actions = str(this_action) + ", -" + str(this_action)
+            else:
+                final_actions = final_actions + "," + str(this_action) + ", -" + str(this_action)
+        subprocess.run(["netconvert", "--sumo-net-file=" + dir_path + os.sep + "Networks" + os.sep + "Original" + os.sep + "osm.net.xml.gz",
+                        "--remove-edges.explicit", "" + final_actions + "",
+                        "--output-file=" + dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index) + os.sep + "osm.net.xml",
+                        "--lefthand=True", "--no-warnings", "--no-turnarounds"], stdout=subprocess.DEVNULL)
+        generate_routesxml(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index) + os.sep + "osm.net.xml",
+                           dir_path + os.sep + "vehicles.csv",
+                           dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index) + os.sep + "osm.rou.xml")
+                           # dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index) + os.sep + "osm.trips.xml")
+        generate_sumocfg(dir_path + os.sep + "Networks" + os.sep + "Modified" + os.sep + str(index) + os.sep + "osm.sumocfg")
+
 
 Manager = TrafficProblemManager(debug=False)
-# Manager.runState("Original")
-#Manager.generate_states()
-Manager.run_crude()
+global_actions_set = Manager.generate_powerset(traffic_densities.action_set)
+def runState(state):
+    runparameter = 1000
+    if state == "Original":
+        state = os.sep + "Networks" + os.sep + "Original" + os.sep
+    else:
+        state = os.sep + "Networks" + os.sep + "Modified" + os.sep + str(state) + os.sep
 
+    libsumo.start(["sumo", "-c", dir_path + state + "osm.sumocfg", "--time-to-teleport=10000", "--start",
+                   "--quit-on-end", "--verbose=False", "--duration-log.disable=True", "--duration-log.statistics=False",
+                   "--no-step-log=True", "--threads=3","--step-length=0.5","--no-warnings=True"])
+    current_pollution = []
+    for j in range(0, runparameter):
+        libsumo.simulationStep()
+        current_pollution = read_road_sensors(current_pollution)
+    libsumo.close()
+    return sum(current_pollution)/500
+
+
+def run_crude():
+    if __name__ == '__main__':
+        # Converting actionset into powerset
+        # Create a multiprocessing pool
+        multiprocessing.freeze_support()
+        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+        result_list_tqdm = []
+        for result in tqdm.tqdm(pool.imap(runState, range(0, len(global_actions_set))), total=len(global_actions_set)):
+            result_list_tqdm.append(result)
+        pool.close()
+        pool.join()
+        print(result_list_tqdm)
+
+        df = pd.DataFrame(result_list_tqdm)
+        df.columns = ["COEmissions"]
+        df.to_csv(dir_path + os.sep + "Networks" + os.sep + "COEmissions.csv", index=True)
+
+
+
+def read_road_sensors(pollution):
+    sensors = traffic_densities.road_sensors
+
+    if not pollution:
+        for sensor in sensors:
+            pollution.append(libsumo.edge.getCOEmission(sensor))
+    else:
+        i = 0
+        for sensor in sensors:
+            pollution[i] = pollution[i] + libsumo.edge.getCOEmission(sensor)
+            i += 1
+    return pollution
+
+# Manager.runState(0)
+# Manager.generate_states()
+# Manager.run_crude()
+
+# run_crude()
+
+file = pd.read_csv(dir_path + os.sep + "Networks" + os.sep + "COEmissions.csv")
+list = list(file['COEmissions'])
+
+minimum = min(list)
+print(minimum)
+print(list.index(min(list)))
+print(global_actions_set[list.index(min(list))])
